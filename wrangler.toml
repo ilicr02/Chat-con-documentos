@@ -1,0 +1,14 @@
+name = "chat-with-pdf"
+compatibility_date = "2024-05-15"
+
+[[d1_databases]]
+binding = "DB" 
+database_name = "chat-revison-documento"              
+database_id = "aa04efed-e32a-4c05-bb0b-e6b10c020f7c"
+
+[build]
+command = "npm run build"
+
+[dev]
+ip = "localhost"
+port = 3000

@@ -1,0 +1,49 @@
+{
+  "name": "chat-with-pdf",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "nuxt dev",
+    "generate": "nuxt generate",
+    "preview": "npx nuxthub preview",
+    "deploy": "npx nuxthub deploy",
+    "postinstall": "nuxt prepare",
+    "lint": "eslint .",
+    "db:generate": "drizzle-kit generate",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@langchain/textsplitters": "^0.1.0",
+    "@nuxt/eslint": "^0.7.6",
+    "@nuxt/ui": "3.1.2",
+    "@nuxthub/core": "^0.8.27",
+    "@nuxtjs/mdc": "^0.11.1",
+    "@nuxtjs/supabase": "^1.5.1",
+    "@supabase/supabase-js": "^2.49.4",
+    "drizzle-orm": "^0.38.4",
+    "nuxt-icon": "1.0.0-beta.7",
+    "unpdf": "^0.12.2",
+    "vue": "^3.5.14",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250515.0",
+    "@nuxt/schema": "^3.17.3",
+    "@tailwindcss/typography": "^0.5.16",
+    "@types/node": "^22.15.19",
+    "@vueuse/core": "^12.8.2",
+    "@vueuse/nuxt": "^12.8.2",
+    "dotenv": "^16.5.0",
+    "drizzle-kit": "^0.30.6",
+    "eslint": "^9.26.0",
+    "h3": "^1.15.3",
+    "nuxt": "^3.17.3",
+    "nuxthub-ratelimit": "^1.0.4",
+    "vue-tsc": "^2.2.10",
+    "wrangler": "^3.114.8",
+    "zod": "^3.24.4"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

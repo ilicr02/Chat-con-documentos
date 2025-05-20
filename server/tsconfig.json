@@ -1,0 +1,32 @@
+{
+  "extends": "../.nuxt/tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "@cloudflare/workers-types",
+      "@types/node",
+      "unenv",
+      "nitropack"
+    ],
+    "strict": true,
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "skipLibCheck": false,
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": ".",
+    "paths": {
+      "~/server/*": ["./*"],
+      "@/*": ["./*"],
+      "#imports": ["../.nuxt/imports.d.ts"]
+    }
+  },
+  "include": [
+    "./**/*.ts",
+    "../.nuxt/types/**/*.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    ".nuxt",
+    "dist",
+    ".output"
+  ]
+}
