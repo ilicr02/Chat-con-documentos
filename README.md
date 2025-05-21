@@ -130,6 +130,8 @@ Una vez implementado tu proyecto, puedes usar [NuxtHub Remote Storage](https://h
 pnpm dev --remote
 ```
 
+
+
 ## 🔗 Enlaces útiles
 
 - [Demostración en vivo](https://chat-with-pdf.nuxt.dev)
