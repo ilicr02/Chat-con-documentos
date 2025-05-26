@@ -1,8 +1,7 @@
-import { defineNuxtConfig } from 'nuxt/config'
 import { fileURLToPath } from 'node:url'
+import { defineNuxtConfig } from 'nuxt/config'
 
 export default defineNuxtConfig({
-
   modules: [
     '@nuxthub/core',
     '@nuxt/eslint',
@@ -16,15 +15,32 @@ export default defineNuxtConfig({
   devtools: { enabled: true },
 
   runtimeConfig: {
+    // Supabase
     supabaseUrl: process.env.SUPABASE_URL,
     supabaseKey: process.env.SUPABASE_ANON_KEY,
     supabaseBucket: process.env.SUPABASE_STORAGE_BUCKET || 'documentos-con-pdf',
+
+    // Cloudflare Hub
+    cloudflare: {
+      accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
+      apiToken: process.env.CLOUDFLARE_API_TOKEN,
+      d1: {
+        binding: 'DB',
+        databaseId: process.env.CLOUDFLARE_D1_DATABASE_ID,
+      },
+      vectorize: {
+        binding: 'VECTORIZE',
+        indexName: process.env.VECTORIZE_INDEX_NAME || 'document-vectors',
+      },
+    },
+
     public: {
       supabaseUrl: process.env.SUPABASE_URL,
       supabaseKey: process.env.SUPABASE_ANON_KEY,
       supabaseBucket: process.env.SUPABASE_STORAGE_BUCKET || 'documentos-con-pdf',
     },
   },
+
   future: { compatibilityVersion: 4 },
   compatibilityDate: '2024-07-30',
 
@@ -46,16 +62,17 @@ export default defineNuxtConfig({
 
   hub: {
     ai: true,
-    blob: true,
+    blob: false, // Desactivado porque usamos Supabase
     cache: true,
     database: true,
     kv: true,
     vectorize: {
       documents: {
         dimensions: 1024,
-        metric: 'euclidean',
+        metric: 'cosine',
         metadataIndexes: {
           sessionId: 'string',
+          documentId: 'string',
         },
       },
     },
@@ -76,32 +93,44 @@ export default defineNuxtConfig({
     },
   },
 
+  cloudflare: {
+    accountId: process.env.CLOUDFLARE_ACCOUNT_ID,
+    apiToken: process.env.CLOUDFLARE_API_TOKEN,
+    d1DatabaseId: {
+      db: {
+        binding: 'DB',
+        databaseId: process.env.CLOUDFLARE_D1_DATABASE_ID,
+      },
+    },
+  },
+
   eslint: {
     config: {
       stylistic: {
         quotes: 'single',
+        semi: false,
       },
     },
   },
 
   supabase: {
-  url: process.env.SUPABASE_URL,
-  key: process.env.SUPABASE_ANON_KEY,
-  redirect: false,
-  serviceKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
-  clientOptions: {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: false,
+    url: process.env.SUPABASE_URL,
+    key: process.env.SUPABASE_ANON_KEY,
+    redirect: false,
+    serviceKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    clientOptions: {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: false,
+      },
+      db: {
+        schema: 'public',
+      },
     },
-    db: {
-      schema: 'public',
+    cookies: {
+      name: 'sb',
+      lifetime: 60 * 60 * 8,
     },
   },
-  cookies: {
-    name: 'sb',
-    lifetime: 60 * 60 * 8, // 8 horas
-  },
-},
 })

@@ -1,6 +1,5 @@
-import { consola } from 'consola' // Cambiado a importación con nombre
 import { z } from 'zod'
-import { ReadableStream } from 'stream/web' // Importación para ReadableStream
+import { ReadableStream } from 'stream/web'
 
 const schema = z.object({
   messages: z.array(
@@ -20,27 +19,28 @@ export default defineEventHandler(async (event) => {
   event.waitUntil((async () => {
     try {
       const params = await processUserQuery({ messages, sessionId }, streamResponse)
-      const result = await useAI().run('@cf/meta/llama-3.1-8b-instruct', { 
-        model: '@cf/meta/llama-3.1-8b-instruct',
-        messages: params.messages, 
-        stream: true 
-      }) as ReadableStream<Uint8Array>
+      const ai = hubAI() // Usar hubAI en lugar de useAI()
 
-      // Convertir ReadableStream a AsyncIterable
+      const result = await ai.run<ReadableStream<Uint8Array>>('@cf/meta/llama-3.1-8b-instruct', {
+        messages: params.messages,
+        stream: true,
+      })
+
       const reader = result.getReader()
       try {
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
-          const chunkString = new TextDecoder().decode(value).slice(5) // remove data: prefix
+          const chunkString = new TextDecoder().decode(value).slice(5)
           await eventStream.push(chunkString)
         }
-      } finally {
+      }
+      finally {
         reader.releaseLock()
       }
     }
     catch (error) {
-      consola.error(error)
+      console.error(error)
       await streamResponse({ error: error instanceof Error ? error.message : 'Unknown error' })
     }
     finally {
