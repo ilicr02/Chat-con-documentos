@@ -1,30 +1,18 @@
+// server/api/upload.post.ts
 import { RecursiveCharacterTextSplitter } from '@langchain/textsplitters'
 import { getDocumentProxy, extractText } from 'unpdf'
-import { useSupabaseClient } from '#imports'
-import { useCloudflare } from '~/server/utils/cloudflare'
+import { z } from 'zod'
 
-interface DocumentMetadata {
-  name: string
-  size: number
-  sessionId: string
-  supabaseUrl: string
-  supabasePath: string
-  textContent: string
-}
-
-interface EmbeddingResponse {
-  result: {
-    data: number[][]
-    shape: number[]
-  }
-}
+const uploadSchema = z.object({
+  sessionId: z.string().min(1),
+  file: z.custom<File>(val => val instanceof File, {
+    message: 'File is required'
+  })
+})
 
 export default defineEventHandler(async (event) => {
-  // 1. Obtener y validar datos del formulario
   const formData = await readMultipartFormData(event)
-  if (!formData) {
-    throw createError({ statusCode: 400, message: 'No form data received' })
-  }
+  if (!formData) throw createError({ statusCode: 400, message: 'No form data received' })
 
   const sessionIdData = formData.find(f => f.name === 'sessionId')?.data
   const fileData = formData.find(f => f.name === 'file')
@@ -35,73 +23,94 @@ export default defineEventHandler(async (event) => {
 
   const sessionId = sessionIdData.toString()
   const file = new File([fileData.data], fileData.filename || 'document.pdf', {
-    type: fileData.type || 'application/pdf',
+    type: fileData.type || 'application/pdf'
   })
 
-  // Validar tamaño del archivo
-  if (file.size > 10 * 1024 * 1024) {
-    throw createError({ statusCode: 400, message: 'File size exceeds 10MB limit' })
+  // Validación con Zod
+  try {
+    uploadSchema.parse({ sessionId, file })
+  } catch (error) {
+    throw createError({ 
+      statusCode: 400, 
+      message: error instanceof z.ZodError 
+        ? error.errors.map(e => e.message).join(', ')
+        : 'Invalid input'
+    })
   }
 
-  // Configurar stream de eventos
+  // Validación adicional del archivo
+  const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
+  if (file.size > MAX_FILE_SIZE) {
+    throw createError({ 
+      statusCode: 400, 
+      message: `File exceeds maximum size of ${MAX_FILE_SIZE / 1024 / 1024}MB`
+    })
+  }
+
+  if (file.type !== 'application/pdf') {
+    throw createError({ statusCode: 400, message: 'Only PDF files are allowed' })
+  }
+
+  // Crear stream de eventos
   const eventStream = createEventStream(event)
   const streamResponse = (data: object) => eventStream.push(JSON.stringify(data))
 
   // Procesamiento en segundo plano
   event.waitUntil((async () => {
     try {
-      // 2. Subir PDF a Supabase
-      streamResponse({ message: 'Uploading to Supabase Storage...' })
-      const { publicUrl, storagePath } = await uploadPDFToSupabase(file, sessionId)
+      // 1. Subir PDF a Supabase Storage
+      await streamResponse({ message: 'Uploading to Supabase Storage...' })
+      const { publicUrl, path } = await uploadToSupabase(file, sessionId)
 
-      // 3. Extraer texto del PDF
-      streamResponse({ message: 'Extracting text from PDF...' })
-      const textContent = await extractTextFromPDFBuffer(new Uint8Array(fileData.data).buffer)
+      // 2. Extraer texto del PDF (en paralelo con la subida)
+      await streamResponse({ message: 'Extracting text from PDF...' })
+      const textContent = await extractTextFromPDF(file)
 
-      // 4. Guardar metadatos en D1
-      streamResponse({ message: 'Storing document metadata...' })
-      const documentId = await storeDocumentMetadata({
+      // 3. Insertar metadatos del documento en D1
+      await streamResponse({ message: 'Storing document metadata...' })
+      const documentId = await insertDocumentMetadata({
         name: file.name,
         size: file.size,
         sessionId,
-        supabaseUrl: publicUrl,
-        supabasePath: storagePath,
-        textContent,
+        storagePath: path,
+        publicUrl,
+        textContent
       })
 
-      // 5. Dividir texto en chunks
-      streamResponse({ message: 'Splitting text into chunks...' })
-      const chunks = await new RecursiveCharacterTextSplitter({
+      // 4. Dividir texto en chunks
+      await streamResponse({ message: 'Splitting text into chunks...' })
+      const splitter = new RecursiveCharacterTextSplitter({
         chunkSize: 500,
         chunkOverlap: 100,
-      }).splitText(textContent)
+      })
+      const chunks = await splitter.splitText(textContent)
 
-      streamResponse({ message: `Text split into ${chunks.length} chunks` })
+      await streamResponse({ message: `Text split into ${chunks.length} chunks` })
 
-      // 6. Procesar chunks y generar embeddings
-      streamResponse({ message: 'Processing text chunks and embeddings...' })
+      // 5. Procesar chunks y generar embeddings
+      await streamResponse({ message: 'Processing text chunks and embeddings...' })
       await processDocumentChunks(chunks, sessionId, documentId, (progress) => {
         streamResponse({
           message: 'Processing chunks...',
           progress: Math.round(progress),
+          chunksProcessed: Math.floor((progress / 100) * chunks.length),
+          totalChunks: chunks.length
         })
       })
 
-      // 7. Notificar éxito
+      // 6. Notificar éxito
       streamResponse({
         success: true,
         documentId,
         chunks: chunks.length,
-        supabaseUrl: publicUrl,
+        publicUrl
       })
-    }
-    catch (error) {
-      console.error('Upload error:', error)
+    } catch (error) {
+      console.error('Upload processing error:', error)
       streamResponse({
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: error instanceof Error ? error.message : 'Upload processing failed'
       })
-    }
-    finally {
+    } finally {
       eventStream.close()
     }
   })())
@@ -110,12 +119,22 @@ export default defineEventHandler(async (event) => {
 })
 
 // Función para subir PDF a Supabase Storage
-async function uploadPDFToSupabase(file: File, sessionId: string): Promise<{ publicUrl: string, storagePath: string }> {
+async function uploadToSupabase(file: File, sessionId: string): Promise<{ publicUrl: string, path: string }> {
   const supabase = useSupabaseClient()
   const bucket = useRuntimeConfig().public.supabaseBucket || 'documents'
   const path = `uploads/${sessionId}/${Date.now()}-${file.name.replace(/\s+/g, '_')}`
 
-  const { data, error } = await supabase.storage
+  // Verificar conexión con Supabase
+  const { data: buckets, error: bucketError } = await supabase.storage.listBuckets()
+  if (bucketError) {
+    throw new Error(`Failed to connect to Supabase: ${bucketError.message}`)
+  }
+  if (!buckets?.some(b => b.name === bucket)) {
+    throw new Error(`Bucket "${bucket}" does not exist in Supabase`)
+  }
+
+  // Subir el archivo
+  const { data, error: uploadError } = await supabase.storage
     .from(bucket)
     .upload(path, file, {
       cacheControl: '3600',
@@ -123,46 +142,69 @@ async function uploadPDFToSupabase(file: File, sessionId: string): Promise<{ pub
       contentType: file.type,
     })
 
-  if (error) throw new Error(`Supabase upload failed: ${error.message}`)
+  if (uploadError) {
+    throw new Error(`Supabase upload failed: ${uploadError.message}`)
+  }
 
-  const { data: { publicUrl } } = supabase.storage.from(bucket).getPublicUrl(data.path)
-  if (!publicUrl) throw new Error('Failed to generate public URL')
+  // Obtener URL pública
+  const { data: { publicUrl } } = supabase.storage
+    .from(bucket)
+    .getPublicUrl(data.path)
 
-  return { publicUrl, storagePath: data.path }
+  if (!publicUrl) {
+    throw new Error('Failed to generate public URL from Supabase')
+  }
+
+  return {
+    publicUrl,
+    path: data.path
+  }
 }
 
 // Función para extraer texto de PDF
-async function extractTextFromPDFBuffer(buffer: ArrayBuffer): Promise<string> {
+async function extractTextFromPDF(file: File): Promise<string> {
   try {
+    const buffer = await file.arrayBuffer()
     const pdf = await getDocumentProxy(new Uint8Array(buffer))
     const result = await extractText(pdf, { mergePages: true })
     return Array.isArray(result.text) ? result.text.join(' ') : result.text
-  }
-  catch (error) {
-    throw new Error(`Text extraction failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
+  } catch (error) {
+    throw new Error(`PDF text extraction failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
   }
 }
 
-// Función para guardar metadatos en D1
-async function storeDocumentMetadata(data: DocumentMetadata): Promise<string> {
-  const { database } = useCloudflare()
-  const db = database()
+// Función para insertar metadatos del documento en D1
+async function insertDocumentMetadata(data: {
+  name: string
+  size: number
+  sessionId: string
+  storagePath: string
+  publicUrl: string
+  textContent: string
+}): Promise<string> {
+  try {
+    const result = await useDrizzle()
+      .insert(documents)
+      .values({
+        name: data.name,
+        size: data.size,
+        session_id: data.sessionId,
+        storage_path: data.storagePath,
+        public_url: data.publicUrl,
+        text_content: data.textContent,
+        status: 'processed',
+        created_at: new Date().toISOString()
+      })
+      .returning({ insertedId: documents.id })
 
-  const result = await db.prepare(
-    `INSERT INTO documents (name, size, session_id, storage_path, public_url, text_content, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'uploaded', datetime('now'))
-     RETURNING id`,
-  ).bind(
-    data.name,
-    data.size,
-    data.sessionId,
-    data.supabasePath,
-    data.supabaseUrl,
-    data.textContent,
-  ).first<{ id: string }>()
+    if (!result?.[0]?.insertedId) {
+      throw new Error('Document metadata insertion failed: No ID returned')
+    }
 
-  if (!result?.id) throw new Error('Document insertion failed')
-  return result.id
+    return result[0].insertedId
+  } catch (error) {
+    throw new Error(`Failed to insert document metadata: ${error instanceof Error ? error.message : 'Database error'}`)
+  }
 }
 
 // Función para procesar chunks y generar embeddings
@@ -170,92 +212,57 @@ async function processDocumentChunks(
   chunks: string[],
   sessionId: string,
   documentId: string,
-  progressCallback?: (progress: number) => void,
+  progressCallback?: (progress: number) => void
 ): Promise<void> {
-  const { ai, vectorize, database } = useCloudflare()
-  const batchSize = 5
+  const BATCH_SIZE = 5
+  const TOTAL_CHUNKS = chunks.length
 
-  for (let i = 0; i < chunks.length; i += batchSize) {
-    const batch = chunks.slice(i, i + batchSize)
+  for (let i = 0; i < TOTAL_CHUNKS; i += BATCH_SIZE) {
+    const batch = chunks.slice(i, i + BATCH_SIZE)
 
-    // 1. Definir tipo explícito para la respuesta de embeddings
-    interface AIEmbeddingResponse {
-      result: {
-        data: number[][]
-        shape: number[]
-      }
-      success: boolean
-      errors: string[]
-    }
-
-    // Generar embeddings con Cloudflare AI
-    const response = await ai().run<AIEmbeddingResponse>('@cf/baai/bge-base-en-v1.5', {
-      text: batch,
-    })
-
-    if (!response || !response.success || !response.result?.data) {
-      const errorMsg = response?.errors?.join(', ') || 'Invalid response format'
-      throw new Error(`Failed to generate embeddings: ${errorMsg}`)
-    }
-
-    const embeddings = response.result.data
-
-    // Insertar chunks en D1
-    const insertResults = await Promise.all(
-      batch.map(chunk => {
-        return database()
-          .prepare(
-            `INSERT INTO document_chunks (text, session_id, document_id)
-             VALUES (?, ?, ?) RETURNING id`,
-          )
-          .bind(chunk, sessionId, documentId)
-          .first<{ id: string }>()
-          .catch(e => {
-            console.error(`Error inserting chunk: ${e.message}`)
-            return null
-          })
-      }),
-    )
-
-    // 5. Validar y filtrar resultados
-    const validResults = insertResults.filter((result): result is { id: string } => {
-      if (!result?.id) {
-        console.warn('Invalid or missing chunk insertion result')
-        return false
-      }
-      return true
-    })
-
-    if (validResults.length !== batch.length) {
-      throw new Error(`Failed to insert all chunks (${validResults.length}/${batch.length} succeeded)`)
-    }
-
-    // 6. Preparar vectores para Vectorize con validación
-    const vectors = embeddings.map((embedding: number[], idx: number) => {
-      const result = validResults[idx]
-      if (!result) {
-        throw new Error(`Missing valid insertion result for chunk ${idx}`)
-      }
-      return {
-        id: result.id,
-        values: embedding,
-        metadata: {
-          sessionId,
-          documentId,
-          text: batch[idx].substring(0, 100) + '...',
-        },
-      }
-    })
-
-    // 7. Insertar en Vectorize con manejo de errores
     try {
-      await vectorize().upsert(vectors)
-    }
-    catch (e) {
-      throw new Error(`Vectorize upsert failed: ${e instanceof Error ? e.message : 'Unknown error'}`)
-    }
+      // 1. Generar embeddings para el batch actual
+      const { data: embeddings } = await useAI().run('@cf/baai/bge-base-en-v1.5', {
+        text: batch
+      })
 
-    // Actualizar progreso
-    progressCallback?.(Math.min(((i + batchSize) / chunks.length) * 100, 100))
+      // 2. Insertar chunks en D1
+      const chunkInsertResults = await useDrizzle()
+        .insert(documentChunks)
+        .values(
+          batch.map((chunk, idx) => ({
+            id: `${documentId}-chunk-${i + idx}`,
+            text: chunk,
+            session_id: sessionId,
+            document_id: documentId,
+            embedding: JSON.stringify(embeddings[idx]) // Opcional: guardar embedding en D1
+          }))
+        )
+        .returning({ insertedChunkId: documentChunks.id })
+
+      // 3. Insertar vectores en Vectorize
+      await useVectorize().upsert(
+        embeddings.map((embedding: number[], idx: number) => ({
+          id: chunkInsertResults[idx].insertedChunkId,
+          values: embedding,
+          metadata: {
+            sessionId,
+            documentId,
+            chunkIndex: i + idx,
+            textPreview: batch[idx].substring(0, 100) + '...',
+          },
+        })),
+      )
+
+      // Actualizar progreso
+      if (progressCallback) {
+        const progress = Math.min(((i + BATCH_SIZE) / TOTAL_CHUNKS) * 100, 100)
+        progressCallback(progress)
+      }
+    }
+    catch (error) {
+      console.error(`Error processing batch ${i}-${i + BATCH_SIZE}:`, error)
+      throw new Error(`Failed to process document chunks: ${error instanceof Error ? error.message : 'Batch processing error'}`)
+    }
   }
 }
