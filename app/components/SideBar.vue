@@ -1,33 +1,45 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { useSupabaseClient, useSupabaseUser } from '#imports'
-import { useToast } from '#imports'
 import { useFileDialog, useDropZone } from '@vueuse/core'
-import type { Document } from '~/types'
-import { useExampleSessions } from '~/composables/examples'
+import { useSupabaseClient, useSupabaseUser, useToast, useRuntimeConfig } from '#imports'
 
-const supabase = useSupabaseClient()
-const user = useSupabaseUser()
-const toast = useToast()
-const loading = ref(false)
-const documents = ref<Array<Document & {
+// Definición de tipos
+interface Document {
   id: string
+  name: string
+  size: number
   storage_path: string
   public_url: string
   status: string
   created_at: string
-}>>([])
+  chunks?: number
+  progress?: string
+}
 
-// Estado para documentos en proceso de carga
-const uploadingDocuments = ref<Array<{
+interface UploadingDocument {
   name: string
   size: number
   progress: number
   id: string
-}>>([])
+}
+
+// Declaración de emits
+const emit = defineEmits<{
+  (e: 'hideDrawer'): void
+}>()
+
+const supabase = useSupabaseClient()
+const _user = useSupabaseUser() // Prefijo _ para variable no usada
+const toast = useToast()
+const loading = ref(false)
+const documents = ref<Document[]>([])
+const dropZoneRef = ref<HTMLDivElement>()
+
+// Estado para documentos en proceso de carga
+const uploadingDocuments = ref<UploadingDocument[]>([])
 
 // Documentos combinados (subidos + en proceso)
-const allDocuments = computed(() => [
+const _allDocuments = computed(() => [
   ...uploadingDocuments.value.map(doc => ({
     ...doc,
     status: 'uploading',
@@ -38,6 +50,22 @@ const allDocuments = computed(() => [
   })),
   ...documents.value,
 ])
+
+// Configuración de zona de drop
+const { isOverDropZone } = useDropZone(dropZoneRef, {
+  onDrop: handleFiles,
+  dataTypes: ['application/pdf'],
+  multiple: true,
+})
+
+const { open, onChange, reset } = useFileDialog({
+  accept: 'application/pdf',
+})
+onChange((files: FileList | null) => {
+  if (files && files.length > 0) {
+    handleFiles(files)
+  }
+})
 
 // Cargar documentos con manejo de errores mejorado
 async function loadDocuments() {
@@ -51,44 +79,32 @@ async function loadDocuments() {
     if (error) throw error
     documents.value = data || []
   }
-  catch (error) {
+  catch (error: unknown) {
     console.error('Error loading documents:', error)
     toast.add({
       title: 'Error',
-      description: 'Failed to load documents: ' + error.message,
-      color: 'red',
+      description: 'Failed to load documents: ' + (error instanceof Error ? error.message : 'Unknown error'),
+      color: 'error',
     })
-  } finally {
+  }
+  finally {
     loading.value = false
   }
 }
 
-// Configuración de zona de drop
-const dropZoneRef = ref<HTMLDivElement>()
-const { isOverDropZone } = useDropZone(dropZoneRef, {
-  onDrop: handleFiles,
-  dataTypes: ['application/pdf'],
-  multiple: true,
-})
-
-const { open, onChange, reset } = useFileDialog({
-  accept: 'application/pdf',
-})
-onChange(handleFiles)
-
-// Manejo de archivos
+// Manejo de archivos con tipo seguro
 async function handleFiles(files: FileList | File[] | null) {
   if (!files || files.length === 0) return
 
-  const validFiles = Array.isArray(files) ? files : Array.from(files)
-    .filter(f => f.type === 'application/pdf')
+  const validFiles = (Array.isArray(files) ? files : Array.from(files))
+    .filter((f): f is File => f instanceof File && f.type === 'application/pdf')
     .filter(f => f.size <= 10 * 1024 * 1024) // 10MB max
 
   if (validFiles.length === 0) {
     toast.add({
       title: 'Archivos inválidos',
       description: 'Solo se aceptan PDFs menores a 10MB',
-      color: 'red',
+      color: 'error',
     })
     return
   }
@@ -110,46 +126,39 @@ async function uploadFiles(files: File[]) {
 
   try {
     for (let i = 0; i < files.length; i++) {
-      await uploadFile(files[i], i)
+      await uploadFile(files[i])
     }
     await loadDocuments()
   }
-  catch (error) {
+  catch (error: unknown) {
     console.error('Upload error:', error)
     toast.add({
       title: 'Upload failed',
-      description: error.message,
-      color: 'red'
+      description: error instanceof Error ? error.message : 'Unknown error',
+      color: 'error',
     })
-  } finally {
+  }
+  finally {
     uploadingDocuments.value = []
     loading.value = false
     reset()
   }
 }
 
-// Subida individual con manejo de errores y progreso
-async function uploadFile(file: File, index: number) {
+// Subida individual con manejo de errores
+async function uploadFile(file: File) {
   try {
     const config = useRuntimeConfig()
     const bucket = config.public.supabaseBucket
     const filePath = `uploads/${Date.now()}-${file.name.replace(/\s+/g, '_')}`
 
-    // Función para actualizar progreso
-    const updateProgress = (progress: number) => {
-      uploadingDocuments.value[index].progress = progress
-    }
-
-    // 1. Subir archivo con seguimiento de progreso
+    // 1. Subir archivo
     const { error: uploadError } = await supabase.storage
       .from(bucket)
       .upload(filePath, file, {
         cacheControl: '3600',
         upsert: false,
         contentType: file.type,
-        onProgress: (progress) => {
-          updateProgress(Math.round((progress.loaded / progress.total) * 100))
-        }
       })
 
     if (uploadError) throw uploadError
@@ -175,12 +184,12 @@ async function uploadFile(file: File, index: number) {
     toast.add({
       title: 'Éxito',
       description: `${file.name} subido correctamente`,
-      color: 'green',
+      color: 'success',
     })
   }
-  catch (error) {
+  catch (error: unknown) {
     console.error('Error uploading file:', error)
-    throw new Error(`Failed to upload ${file.name}: ${error.message}`)
+    throw new Error(`Failed to upload ${file.name}: ${error instanceof Error ? error.message : 'Unknown error'}`)
   }
 }
 
@@ -202,7 +211,7 @@ onMounted(() => {
         color="neutral"
         variant="ghost"
         class="md:hidden"
-        @click="$emit('hideDrawer')"
+        @click="emit('hideDrawer')"
       />
     </div>
     <USeparator />
@@ -210,7 +219,7 @@ onMounted(() => {
       <UCard
         ref="dropZoneRef"
         class="transition-all flex flex-grow mb-2 cursor-pointer hover:ring-emerald-500"
-        :class="{ 'ring-blue-500  ring-opacity-50': isOverDropZone }"
+        :class="{ 'ring-blue-500 ring-opacity-50': isOverDropZone }"
         :ui="{ body: 'flex flex-col items-center justify-center' }"
         @click="open"
       >
@@ -225,21 +234,21 @@ onMounted(() => {
 
     <div class="px-4 pb-4 flex-1 space-y-2 overflow-y-auto flex flex-col">
       <h2 class="mb-2 text-lg font-semibold text-primary">
-       Documentos cargados
+        Documentos cargados
       </h2>
-      <div v-for="(document, i) in documents" :key="document.name" class="py-1">
+      <div v-for="(document, i) in documents" :key="document.id" class="py-1">
         <p class="font-medium text-sm mb-1 truncate text-zinc-700 dark:text-zinc-300">
           {{ document.name }}
         </p>
         <p class="text-zinc-500 text-xs">
-          {{ document.size }} MB
+          {{ (document.size / (1024 * 1024)).toFixed(2) }} MB
           <template v-if="document.chunks">
             &#x2022; {{ document.chunks }} chunks
           </template>
         </p>
         <div v-if="document.progress" class="mt-0.5 flex items-center px-1.5 gap-2">
           <LoadingIcon class="size-2" />
-          <p class="text-zinc-400 text-xs ">
+          <p class="text-zinc-400 text-xs">
             {{ document.progress }}
           </p>
         </div>
@@ -250,20 +259,9 @@ onMounted(() => {
       <p v-if="!documents.length" class="text-zinc-700 dark:text-zinc-300">
         No se han subido documentos
       </p>
-
-      <p v-if="!documents.length" class="mt-3">
-        Pruebe un documento de ejemplo:
-      </p>
-      <ul v-if="!documents.length" class="space-y-2 text-xs truncate cursor-pointer text-blue-500">
-        <li v-for="example in exampleSessions" :key="example.id" @click="setExampleSession(example.id)">
-          {{ example.name }}
-        </li>
-      </ul>
     </div>
 
     <USeparator />
-    <div class="p-2">
-      
-    </div>
+    <div class="p-2" />
   </div>
 </template>
