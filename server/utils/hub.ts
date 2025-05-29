@@ -71,7 +71,7 @@ export function hubDatabase() {
 }
 
 // Conexión a Cloudflare AI
-export function hubAI() {
+export function useAI() {
   const { cloudflare } = useRuntimeConfig()
   if (!cloudflare?.ai) throw new Error('Cloudflare AI not configured')
 
@@ -86,7 +86,7 @@ export function hubAI() {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify(input),
-        }
+        },
       )
       if (!response.ok) {
         throw new Error(`AI request failed: ${response.statusText}`)
@@ -104,7 +104,7 @@ export function hubAI() {
 }
 
 // Conexión a Cloudflare Vectorize
-export function hubVectorize() {
+export function useVectorize() {
   const { cloudflare } = useRuntimeConfig()
   if (!cloudflare?.vectorize) throw new Error('Cloudflare Vectorize not configured')
 
